@@ -9,8 +9,21 @@ import {
 } from 'lucide-react';
 
 // --- 1. Configuration & Templates ---
-const apiKey = ""; // API Key injected by environment
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'sonograph-x';
+const getEnv = (key, globalVar) => {
+    // 캔버스 환경이 아닐 때 (Vite 로컬/Vercel 빌드 환경)
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
+        return import.meta.env[key];
+    }
+    // 캔버스 환경일 때 (글로벌 변수)
+    return typeof globalVar !== 'undefined' ? globalVar : null;
+};
+
+// API Key를 명확히 로드합니다.
+// Canvas 환경: globalVar가 사용됨
+// Vercel 환경: import.meta.env['VITE_GEMINI_API_KEY']가 사용됨
+const apiKey = getEnv('VITE_GEMINI_API_KEY', '') || ""; 
+const appId = getEnv('VITE_APP_ID', typeof __app_id !== 'undefined' ? __app_id : 'sonograph-x');
+
 
 const TEMPLATES = {
     'Abdomen US': {
