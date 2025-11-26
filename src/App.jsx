@@ -2,10 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, doc, addDoc, setDoc, onSnapshot, query, deleteDoc } from 'firebase/firestore';
-import { 
-  Activity, Save, Copy, Printer, FileText, History, 
-  Trash2, Plus, CheckCircle2, Layout, User, Calendar, 
-  Stethoscope, FileOutput, ChevronRight, X, Menu, Sparkles, Loader2, MessageCircle
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import {
+  Activity, Save, Copy, Printer,
+  Trash2, Plus, Layout, User,
+  Stethoscope, ChevronRight, X, Menu, Sparkles, Loader2, MessageCircle
 } from 'lucide-react';
 
 // --- 1. Configuration & Templates ---
@@ -18,42 +19,95 @@ const getEnv = (key, globalVar) => {
     return typeof globalVar !== 'undefined' ? globalVar : null;
 };
 
-// API Key를 명확히 로드합니다.
-// Canvas 환경: globalVar가 사용됨
-// Vercel 환경: import.meta.env['VITE_GEMINI_API_KEY']가 사용됨
-const apiKey = getEnv('VITE_GEMINI_API_KEY', '') || ""; 
 const appId = getEnv('VITE_APP_ID', typeof __app_id !== 'undefined' ? __app_id : 'sonograph-x');
 
 
 const TEMPLATES = {
     'Abdomen US': {
-        normal: "The liver is normal in size and echotexture. No focal liver lesion is seen.\nThe gallbladder is well-distended without wall thickening or stones.\nThe pancreas and spleen are unremarkable.\nBoth kidneys show normal size and echogenicity without hydronephrosis.",
+        normal: "Liver is appropriate in size with homogeneous echotexture and no focal lesion.\nGallbladder is well-distended without wall thickening, stones, or sludge; common duct is not dilated.\nPancreas and spleen are unremarkable.\nBoth kidneys are normal in size and echogenicity without hydronephrosis or calculus.",
         impression: "Normal abdominal ultrasound."
     },
-    'Thyroid US': {
-        normal: "The thyroid gland is of normal size and homogeneous echotexture.\nNo nodules, cysts, or calcifications are identified.\nIsthmus thickness is normal.\nNo abnormal cervical lymphadenopathy is observed.",
-        impression: "Normal thyroid ultrasound."
+    'Kidney-Bladder US': {
+        normal: "Both kidneys demonstrate preserved corticomedullary differentiation with no calculus or hydronephrosis.\nUreters are not dilated.\nUrinary bladder is smoothly contoured without wall thickening or intraluminal debris; post-void residual is minimal if assessed.",
+        impression: "Normal renal and bladder ultrasound."
     },
-    'KUB (Kidney, Ureter, Bladder) US': {
-        normal: "Both kidneys are normal in size, position, and echotexture.\nCorticomedullary differentiation is well-preserved.\nNo renal calculi or hydronephrosis is seen.\nThe urinary bladder is well-distended with smooth walls.",
-        impression: "Normal urinary tract ultrasound."
+    'Neonatal Spine US': {
+        normal: "Conus medullaris terminates at L1–L2 with a thin, mobile filum.\nNo dorsal dermal sinus, lipoma, or intraspinal mass is identified.\nPosterior elements are intact without evidence of dysraphism.\nNo abnormal fluid collection in the paraspinal soft tissues.",
+        impression: "Normal neonatal spinal canal and cord."
     },
-    'Carotid Doppler US': {
-        normal: "Common, internal, and external carotid arteries show normal caliber and flow velocities.\nIntima-media thickness (IMT) is within normal limits.\nNo hemodynamically significant stenosis or plaque is identified.",
-        impression: "Normal carotid Doppler study."
+    'Pediatric Neck US': {
+        normal: "Thyroid lobes are normal in size with homogeneous echotexture.\nVisualized cervical lymph nodes are small with preserved fatty hila and normal vascular pattern.\nNo cystic or vascular neck mass is detected.\nSalivary glands appear unremarkable.",
+        impression: "Normal pediatric neck ultrasound."
     },
-    'Breast US': {
-        normal: "Bilateral breasts show normal fibroglandular tissue echotexture.\nNo solid or cystic mass is identified.\nNo ductal dilatation or architectural distortion.\nAxillary lymph nodes are unremarkable.",
-        impression: "BI-RADS Category 1: Negative."
+    'Neonatal Head US': {
+        normal: "Lateral ventricles are normal in caliber; third and fourth ventricles are not dilated.\nGerminal matrix at the caudothalamic groove is intact without echogenic focus.\nPeriventricular white matter shows homogeneous echogenicity without cystic change.\nNo evidence of intracranial hemorrhage or ventriculomegaly.",
+        impression: "Normal cranial ultrasound for age."
     },
-    'Musculoskeletal US': {
-        normal: "Examined tendons and ligaments show normal fibrillar pattern and echogenicity.\nNo effusion or synovial thickening in the joint.\nNo muscle tear or mass lesion identified.",
-        impression: "Normal musculoskeletal ultrasound."
+    'Scrotum US': {
+        normal: "Both testes are normal in size with homogeneous echogenicity and symmetric intratesticular flow.\nEpididymides are unremarkable.\nNo hydrocele, varicocele, or scrotal wall thickening is present.\nSpermatic cords are intact without twisting.",
+        impression: "Normal scrotal ultrasound."
+    },
+    'Prepubertal Uterus-Ovary US': {
+        normal: "Uterus is tubular and age-appropriate with thin endometrial stripe.\nBoth ovaries are normal in volume with small peripheral follicles; vascularity is symmetric.\nNo adnexal mass or ovarian torsion is identified.\nNo free pelvic fluid.",
+        impression: "Normal prepubertal pelvic ultrasound."
     },
     'Appendix US': {
-        normal: "The appendix is visualized with a diameter of less than 6mm.\nIt is compressible and shows no surrounding fat stranding or fluid collection.",
-        impression: "Normal appendix. No signs of appendicitis."
+        normal: "The appendix is fully visualized, compressible, and measures <6 mm in diameter.\nWall is not thickened; no periappendiceal fat stranding, fluid collection, or appendicolith is seen.\nNo regional lymphadenopathy or free fluid.",
+        impression: "Normal appendix without sonographic evidence of appendicitis."
+    },
+    'Bowel US': {
+        normal: "Visualized bowel loops show normal wall thickness and preserved peristalsis.\nNo target/donut sign or intussusception is identified.\nMesentery is unremarkable without edema or lymphadenopathy.\nNo ascites or focal fluid collection.",
+        impression: "Normal bowel ultrasound."
     }
+};
+
+const COMMON_ABNORMAL = {
+    general: [
+        { label: 'Free fluid', text: 'Small volume simple free fluid noted in the dependent pelvis without septation or debris.' },
+        { label: 'Lymphadenopathy', text: 'Mildly enlarged lymph nodes with preserved hilum and cortical thickness <3 mm, likely reactive.' }
+    ],
+    'Abdomen US': [
+        { label: 'Cholecystitis', text: 'Gallbladder wall thickening with mural hyperemia and a positive sonographic Murphy sign; layering sludge without calculi. Common duct caliber is within normal limits.' },
+        { label: 'Hepatomegaly', text: 'Liver is enlarged with mildly increased echogenicity, compatible with diffuse parenchymal disease. No focal lesion or intrahepatic biliary dilatation.' },
+        { label: 'Splenomegaly', text: 'Spleen is enlarged for age with homogeneous echotexture and no focal lesion.' }
+    ],
+    'Kidney-Bladder US': [
+        { label: 'Hydronephrosis', text: 'Pelvicalyceal dilatation with cortical thickness preserved; no visible obstructing calculus. Ureter is not dilated.' },
+        { label: 'Pyelonephritis', text: 'Patchy areas of reduced corticomedullary differentiation with focal parenchymal hyperemia; no abscess or perinephric collection.' },
+        { label: 'Cystitis', text: 'Urinary bladder shows diffuse wall thickening with mild mucosal irregularity; no intraluminal mass. No perivesical collection.' }
+    ],
+    'Neonatal Spine US': [
+        { label: 'Low-lying conus', text: 'Conus medullaris terminates below L2–L3 with a thickened filum; cord motion is limited, raising concern for tethered cord.' },
+        { label: 'Dermal sinus tract', text: 'Echogenic tract extending from the dermal dimple toward the dorsal spinal canal; no associated collection.' }
+    ],
+    'Pediatric Neck US': [
+        { label: 'Reactive nodes', text: 'Multiple cervical lymph nodes are mildly enlarged with preserved fatty hila and central vascularity, favor reactive change.' },
+        { label: 'Thyroglossal duct cyst', text: 'Well-defined midline cystic lesion superior to the thyroid isthmus without internal vascularity.' },
+        { label: 'Branchial cleft cyst', text: 'Thin-walled cystic structure along the anterior border of the sternocleidomastoid muscle without solid component.' }
+    ],
+    'Neonatal Head US': [
+        { label: 'Germinal matrix hemorrhage', text: 'Echogenic focus at the caudothalamic groove measuring ___ cm, consistent with germinal matrix hemorrhage (Grade I). Ventricular size is preserved.' },
+        { label: 'Ventriculomegaly', text: 'Lateral ventricles are enlarged with atrial width ___ mm; no echogenic intraventricular clot.' },
+        { label: 'Periventricular leukomalacia', text: 'Areas of increased periventricular echogenicity without cystic change, suspicious for early white matter injury.' }
+    ],
+    'Scrotum US': [
+        { label: 'Torsion', text: 'Affected testis is enlarged and heterogeneous with absent intratesticular flow; spermatic cord shows whirlpool sign. Contralateral testis is normal.' },
+        { label: 'Epididymo-orchitis', text: 'Testis and epididymis are enlarged with heterogeneous echogenicity and markedly increased vascularity; small reactive hydrocele present.' },
+        { label: 'Hydrocele', text: 'Anechoic fluid collection surrounds the testis without septation; testes and epididymides are otherwise normal.' }
+    ],
+    'Prepubertal Uterus-Ovary US': [
+        { label: 'Ovarian torsion', text: 'Affected ovary is enlarged with peripheral follicles and absent central flow; twisted vascular pedicle is suggested by the whirlpool sign.' },
+        { label: 'Hemorrhagic cyst', text: 'Complex ovarian cyst with lace-like internal echoes and no internal vascularity, consistent with hemorrhagic cyst.' }
+    ],
+    'Appendix US': [
+        { label: 'Appendicitis', text: 'Appendix is noncompressible measuring >6 mm with wall hyperemia and periappendiceal fat stranding; no focal abscess.' },
+        { label: 'Perforation', text: 'Appendiceal wall discontinuity with periappendiceal fluid and phlegmon; echogenic foci compatible with appendicolith.' },
+        { label: 'Mesenteric adenitis', text: 'Multiple enlarged mesenteric lymph nodes with preserved fatty hilum; appendix is compressible and normal in caliber.' }
+    ],
+    'Bowel US': [
+        { label: 'Intussusception', text: 'Target-shaped mass with layered concentric rings in the right abdomen; transient peristalsis noted; no free fluid or pneumoperitoneum sonographically.' },
+        { label: 'Inflammatory bowel change', text: 'Segmental bowel wall thickening with stratified mural hyperemia and adjacent mesenteric fat echogenicity; no focal collection.' }
+    ]
 };
 
 // --- 2. React Application ---
@@ -75,13 +129,16 @@ export default function App() {
         name: '', id: '', rrn: '', date: new Date().toISOString().split('T')[0],
         type: '', indication: '', findings: '', impression: ''
     });
-    
+
     // Calculated
     const [ageSex, setAgeSex] = useState({ age: '', sex: '' });
+
+    const abnormalOptions = COMMON_ABNORMAL[form.type] || COMMON_ABNORMAL.general;
 
     // Refs
     const dbRef = useRef(null);
     const authRef = useRef(null);
+    const functionsRef = useRef(null);
 
     // --- 3. Initialization & Effects ---
     useEffect(() => {
@@ -93,6 +150,7 @@ export default function App() {
                     const fbApp = initializeApp(config);
                     authRef.current = getAuth(fbApp);
                     dbRef.current = getFirestore(fbApp);
+                    functionsRef.current = getFunctions(fbApp);
 
                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                         await signInWithCustomToken(authRef.current, __initial_auth_token);
@@ -163,6 +221,13 @@ export default function App() {
         }));
     };
 
+    const addAbnormalSnippet = (text) => {
+        setForm(prev => ({
+            ...prev,
+            findings: prev.findings ? `${prev.findings}\n\n${text}` : text
+        }));
+    };
+
     const handleSave = async () => {
         if (!user || !dbRef.current) return;
         if (!form.name) return alert("Patient Name is required.");
@@ -207,7 +272,7 @@ export default function App() {
     };
 
     const handleCopy = () => {
-        const text = `Patient: ${form.name} (${form.id})\nDate: ${form.date}\n\n[Findings]\n${form.findings}\n\n[Conclusion]\n${form.impression}`;
+        const text = `Patient: ${form.name} (${form.id})\nRRN: ${form.rrn}\nAge/Sex: ${ageSex.age} / ${ageSex.sex}\nDate: ${form.date}\nExam: ${form.type}\nClinical history: ${form.indication}\n\n[Findings]\n${form.findings}\n\n[Impression]\n${form.impression}`;
         const ta = document.createElement("textarea");
         ta.value = text;
         document.body.appendChild(ta);
@@ -217,35 +282,28 @@ export default function App() {
         alert("Copied to clipboard.");
     };
 
-    // --- 5. Gemini AI Integration ---
-    const callGemini = async (prompt) => {
-        const MAX_RETRIES = 3;
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-        
-        for (let i = 0; i < MAX_RETRIES; i++) {
-            try {
-                const response = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-                });
-                const data = await response.json();
-                if (response.ok) return data.candidates[0].content.parts[0].text.trim();
-                if (response.status !== 429) throw new Error(data.error?.message);
-                await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)));
-            } catch (e) {
-                console.error(e);
-                if (i === MAX_RETRIES - 1) alert("AI Service Error: " + e.message);
-            }
+    // --- 5. Firebase Functions AI Bridge ---
+    const callAiFunction = async (mode, payload) => {
+        if (!functionsRef.current) {
+            alert("AI service unavailable. Check Firebase Functions configuration.");
+            return null;
         }
-        return null;
+
+        try {
+            const fn = httpsCallable(functionsRef.current, 'generateReportText');
+            const res = await fn({ mode, ...payload });
+            return res.data?.text || '';
+        } catch (e) {
+            console.error(e);
+            alert("AI Service Error: " + (e.message || 'Unknown error'));
+            return null;
+        }
     };
 
     const handleAiPolish = async () => {
         if (!form.findings) return alert("Please enter findings first.");
         setAiLoading('polish');
-        const prompt = `You are a professional radiologist. Rewrite the following ultrasound findings to be more professional, concise, and use standard medical English. Do not add new information.\n\nFindings:\n${form.findings}`;
-        const result = await callGemini(prompt);
+        const result = await callAiFunction('polish', { findings: form.findings });
         if (result) setForm(prev => ({ ...prev, findings: result }));
         setAiLoading(false);
     };
@@ -253,8 +311,7 @@ export default function App() {
     const handleAiImpression = async () => {
         if (!form.findings) return alert("Please enter findings first.");
         setAiLoading('impression');
-        const prompt = `You are a professional radiologist. Based ONLY on the following ultrasound findings, generate a concise Conclusion/Impression. Use standard medical terminology.\n\nFindings:\n${form.findings}`;
-        const result = await callGemini(prompt);
+        const result = await callAiFunction('impression', { findings: form.findings });
         if (result) setForm(prev => ({ ...prev, impression: result }));
         setAiLoading(false);
     };
@@ -264,28 +321,27 @@ export default function App() {
         setExplainModalOpen(true);
         setAiExplanation('Generating explanation...');
         setAiLoading('explain');
-        
-        const prompt = `Explain the following ultrasound report for a patient in simple, reassuring language (in English). Avoid medical jargon where possible or explain it clearly. Structure it with a Summary and Key Details.\n\nFindings: ${form.findings}\nImpression: ${form.impression}`;
-        
-        const result = await callGemini(prompt);
+
+        const result = await callAiFunction('explain', { findings: form.findings, impression: form.impression });
         setAiExplanation(result || "Failed to generate explanation.");
         setAiLoading(false);
     };
 
     // --- Render ---
-    if (loading) return <div className="h-screen bg-gray-900 flex items-center justify-center text-teal-500"><Activity className="w-10 h-10 animate-spin"/></div>;
+    if (loading) return <div className="h-screen bg-gradient-to-br from-[#060b17] via-[#0b1528] to-[#03060d] flex items-center justify-center text-teal-400"><Activity className="w-10 h-10 animate-spin"/></div>;
 
     return (
-        <div className="flex h-screen bg-[#0f172a] text-slate-300 font-sans overflow-hidden selection:bg-teal-500 selection:text-white">
+        <div className="relative flex h-screen bg-gradient-to-br from-[#060b17] via-[#0b1528] to-[#03060d] text-slate-200 font-sans overflow-hidden selection:bg-teal-500 selection:text-white">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(34,211,238,0.08),transparent_35%),radial-gradient(circle_at_80%_10%,rgba(129,140,248,0.12),transparent_35%),radial-gradient(circle_at_50%_80%,rgba(236,72,153,0.07),transparent_30%)] pointer-events-none" aria-hidden="true" />
             
             {/* Styles for Print */}
             <style>{`
                 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Serif+KR:wght@400;700&display=swap');
                 
                 ::-webkit-scrollbar { width: 8px; height: 8px; }
-                ::-webkit-scrollbar-track { background: #1e293b; }
-                ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
-                ::-webkit-scrollbar-thumb:hover { background: #475569; }
+                ::-webkit-scrollbar-track { background: rgba(255,255,255,0.04); }
+                ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+                ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
 
                 @media print {
                     @page { margin: 0; size: A4; }
@@ -318,25 +374,25 @@ export default function App() {
             {/* AI Explanation Modal */}
             {explainModalOpen && (
                 <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-                    <div className="bg-white text-slate-900 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden transform transition-all scale-100">
-                        <div className="p-5 bg-gradient-to-r from-indigo-600 to-purple-600 flex justify-between items-center text-white">
+                    <div className="bg-[#0c1223]/90 text-slate-100 rounded-2xl shadow-[0_25px_80px_rgba(0,0,0,0.6)] w-full max-w-lg overflow-hidden transform transition-all scale-100 border border-white/10 backdrop-blur-2xl">
+                        <div className="p-5 bg-gradient-to-r from-indigo-500/80 via-purple-600/80 to-teal-500/60 flex justify-between items-center text-white">
                             <h3 className="font-bold flex items-center gap-2">
-                                <Sparkles className="w-5 h-5" /> Patient Explanation
+                                <Sparkles className="w-5 h-5" /> 환자 안내 리포트
                             </h3>
                             <button onClick={() => setExplainModalOpen(false)} className="hover:bg-white/20 rounded p-1"><X className="w-5 h-5" /></button>
                         </div>
                         <div className="p-6 max-h-[60vh] overflow-y-auto">
                             {aiLoading === 'explain' ? (
-                                <div className="flex flex-col items-center justify-center py-8 text-indigo-600 gap-3">
+                                <div className="flex flex-col items-center justify-center py-8 text-indigo-200 gap-3">
                                     <Loader2 className="w-8 h-8 animate-spin" />
-                                    <span className="text-sm font-medium">Generating friendly explanation...</span>
+                                    <span className="text-sm font-medium">한글 설명을 준비 중입니다...</span>
                                 </div>
                             ) : (
-                                <p className="text-sm leading-relaxed whitespace-pre-wrap text-slate-700">{aiExplanation}</p>
+                                <p className="text-sm leading-relaxed whitespace-pre-wrap text-slate-100">{aiExplanation}</p>
                             )}
                         </div>
-                        <div className="p-4 bg-slate-50 flex justify-end border-t border-slate-200">
-                            <button onClick={() => setExplainModalOpen(false)} className="px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 font-medium text-sm transition-colors">Close</button>
+                        <div className="p-4 bg-white/5 flex justify-end border-t border-white/10 backdrop-blur-xl">
+                            <button onClick={() => setExplainModalOpen(false)} className="px-4 py-2 bg-white/10 text-white rounded-lg hover:bg-white/20 font-medium text-sm transition-colors border border-white/10">닫기</button>
                         </div>
                     </div>
                 </div>
@@ -346,8 +402,8 @@ export default function App() {
             {sidebarOpen && <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={() => setSidebarOpen(false)}></div>}
 
             {/* 1. Sidebar (History) */}
-            <aside className={`${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:relative z-30 w-72 bg-[#1e293b] border-r border-slate-700 flex flex-col transition-transform duration-300 shadow-2xl`}>
-                <div className="p-6 flex items-center gap-3 border-b border-slate-700/50">
+            <aside className={`${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:relative z-30 w-72 bg-white/10 backdrop-blur-2xl border-r border-white/10 flex flex-col transition-transform duration-300 shadow-[0_20px_80px_rgba(0,0,0,0.35)]`}>
+                <div className="p-6 flex items-center gap-3 border-b border-white/10">
                     <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center shadow-lg shadow-teal-500/20">
                         <Activity className="text-white w-6 h-6" />
                     </div>
@@ -358,16 +414,16 @@ export default function App() {
                 </div>
 
                 <div className="p-4">
-                    <button onClick={handleNew} className="w-full py-3 px-4 bg-teal-600 hover:bg-teal-500 text-white rounded-lg font-medium transition-all flex items-center justify-center gap-2 shadow-lg shadow-teal-900/20 group">
+                    <button onClick={handleNew} className="w-full py-3 px-4 bg-gradient-to-r from-teal-500 to-indigo-500 hover:from-teal-400 hover:to-indigo-400 text-white rounded-lg font-medium transition-all flex items-center justify-center gap-2 shadow-[0_15px_40px_rgba(16,185,129,0.3)] group">
                         <Plus className="w-5 h-5 group-hover:rotate-90 transition-transform" /> New Report
                     </button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-1">
-                    <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 pl-2">History ({reports.length})</div>
+                    <div className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 pl-2">History ({reports.length})</div>
                     {reports.map(r => (
                         <div key={r.id} onClick={() => handleLoad(r)} 
-                             className={`group relative p-3 rounded-lg cursor-pointer transition-all border ${currentId === r.id ? 'bg-slate-700/50 border-teal-500/50' : 'bg-slate-800/50 border-transparent hover:bg-slate-800'}`}>
+                             className={`group relative p-3 rounded-lg cursor-pointer transition-all border ${currentId === r.id ? 'bg-white/10 border-teal-400/60 shadow-lg shadow-teal-500/10' : 'bg-white/5 border-transparent hover:bg-white/10'}`}>
                             <div className="flex justify-between items-start">
                                 <span className="font-medium text-slate-200 truncate">{r.name || 'No Name'}</span>
                                 <span className="text-[10px] text-slate-500 bg-slate-900 px-1.5 py-0.5 rounded">{r.date}</span>
@@ -385,7 +441,7 @@ export default function App() {
             <main className="flex-1 flex flex-col min-w-0 relative">
                 
                 {/* Top Bar */}
-                <header className="h-16 bg-[#1e293b]/80 backdrop-blur-md border-b border-slate-700 flex items-center justify-between px-6 z-10">
+                <header className="h-16 bg-white/10 backdrop-blur-2xl border-b border-white/10 flex items-center justify-between px-6 z-10 shadow-[0_10px_40px_rgba(0,0,0,0.35)]">
                     <div className="flex items-center gap-4">
                         <button onClick={() => setSidebarOpen(!sidebarOpen)} className="md:hidden text-slate-400 hover:text-white"><Menu /></button>
                         <div className="hidden md:flex items-center gap-2 text-sm text-slate-400">
@@ -398,14 +454,14 @@ export default function App() {
                     <div className="flex items-center gap-2">
                         {/* AI Explain Button */}
                         <button onClick={handleAiExplain} className="hidden md:flex items-center gap-1.5 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 border border-indigo-500/30 px-3 py-1.5 rounded-lg text-sm font-medium transition-all mr-2">
-                            <Sparkles className="w-4 h-4" /> 
-                            <span>Patient Explain</span>
+                            <MessageCircle className="w-4 h-4" />
+                            <span>환자 안내 AI</span>
                         </button>
 
-                        <button onClick={handleSave} className="p-2 text-slate-400 hover:text-teal-400 hover:bg-slate-800 rounded-lg transition-colors" title="Save">
+                        <button onClick={handleSave} className="p-2 text-slate-300 hover:text-teal-300 hover:bg-white/10 rounded-lg transition-colors" title="Save">
                             <Save className="w-5 h-5" />
                         </button>
-                        <button onClick={handleCopy} className="p-2 text-slate-400 hover:text-blue-400 hover:bg-slate-800 rounded-lg transition-colors" title="Copy Text">
+                        <button onClick={handleCopy} className="p-2 text-slate-300 hover:text-blue-300 hover:bg-white/10 rounded-lg transition-colors" title="Copy Text">
                             <Copy className="w-5 h-5" />
                         </button>
                         <div className="w-px h-6 bg-slate-700 mx-2"></div>
@@ -423,48 +479,57 @@ export default function App() {
                         <div className="max-w-4xl mx-auto space-y-8">
                             
                             {/* Section: Patient Info */}
-                            <div className="bg-[#1e293b] border border-slate-700 rounded-2xl p-6 shadow-xl">
-                                <div className="flex items-center gap-2 mb-6 text-teal-400 border-b border-slate-700 pb-2">
+                            <div className="bg-white/10 border border-white/10 backdrop-blur-xl rounded-2xl p-6 shadow-[0_20px_70px_rgba(0,0,0,0.35)]">
+                                <div className="flex items-center gap-2 mb-6 text-teal-300 border-b border-white/10 pb-2">
                                     <User className="w-5 h-5" />
                                     <h2 className="font-bold text-lg">Patient Information</h2>
                                 </div>
-                                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                                <div className="grid grid-cols-1 md:grid-cols-6 gap-6">
+                                    <div className="md:col-span-2">
+                                        <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Name</label>
+                                        <input name="name" value={form.name} onChange={handleChange} className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder:text-slate-400 focus:ring-2 focus:ring-teal-500/60 focus:border-transparent outline-none transition-all backdrop-blur-sm" placeholder="Jane Doe" />
+                                    </div>
+                                    <div className="md:col-span-2">
+                                        <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Patient ID</label>
+                                        <input name="id" value={form.id} onChange={handleChange} className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder:text-slate-400 focus:ring-2 focus:ring-teal-500/60 outline-none backdrop-blur-sm" placeholder="12345678" />
+                                    </div>
+                                    <div className="md:col-span-2">
+                                        <label className="block text-xs font-bold text-slate-400 uppercase mb-2">RRN</label>
+                                        <input name="rrn" value={form.rrn} onChange={handleChange} className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder:text-slate-400 focus:ring-2 focus:ring-teal-500/60 outline-none backdrop-blur-sm" placeholder="000000-0000000" />
+                                    </div>
+
                                     <div className="md:col-span-1">
-                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Name</label>
-                                        <input name="name" value={form.name} onChange={handleChange} className="w-full bg-slate-800 border border-slate-600 rounded-lg px-4 py-2.5 text-slate-100 focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none transition-all" placeholder="Jane Doe" />
+                                        <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Age (auto)</label>
+                                        <input value={ageSex.age} readOnly className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-slate-200 backdrop-blur-sm" placeholder="" />
                                     </div>
                                     <div className="md:col-span-1">
-                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Patient ID</label>
-                                        <input name="id" value={form.id} onChange={handleChange} className="w-full bg-slate-800 border border-slate-600 rounded-lg px-4 py-2.5 text-slate-100 focus:ring-2 focus:ring-teal-500 outline-none" placeholder="12345678" />
+                                        <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Sex (auto)</label>
+                                        <input value={ageSex.sex} readOnly className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-slate-200 backdrop-blur-sm" placeholder="" />
                                     </div>
                                     <div className="md:col-span-1">
-                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">RRN</label>
-                                        <input name="rrn" value={form.rrn} onChange={handleChange} className="w-full bg-slate-800 border border-slate-600 rounded-lg px-4 py-2.5 text-slate-100 focus:ring-2 focus:ring-teal-500 outline-none" placeholder="000000-0000000" />
-                                    </div>
-                                    <div className="md:col-span-1">
-                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Exam Date</label>
-                                        <input type="date" name="date" value={form.date} onChange={handleChange} className="w-full bg-slate-800 border border-slate-600 rounded-lg px-4 py-2.5 text-slate-100 focus:ring-2 focus:ring-teal-500 outline-none" />
+                                        <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Exam Date</label>
+                                        <input type="date" name="date" value={form.date} onChange={handleChange} className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white focus:ring-2 focus:ring-teal-500/60 outline-none backdrop-blur-sm" />
                                     </div>
                                 </div>
                             </div>
 
                             {/* Section: Findings */}
-                            <div className="bg-[#1e293b] border border-slate-700 rounded-2xl p-6 shadow-xl relative overflow-hidden">
-                                <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-teal-500 to-blue-600"></div>
+                            <div className="bg-white/10 border border-white/10 backdrop-blur-xl rounded-2xl p-6 shadow-[0_20px_70px_rgba(0,0,0,0.35)] relative overflow-hidden">
+                                <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-teal-400 to-indigo-500"></div>
                                 
                                 <div className="flex justify-between items-start mb-6">
-                                    <div className="flex items-center gap-2 text-teal-400">
+                                    <div className="flex items-center gap-2 text-teal-200">
                                         <Stethoscope className="w-5 h-5" />
                                         <h2 className="font-bold text-lg">Scan Findings</h2>
                                     </div>
                                     
                                     <div className="relative group">
-                                        <select name="type" value={form.type} onChange={handleTemplate} 
-                                            className="appearance-none bg-slate-800 text-slate-200 border border-slate-600 rounded-lg pl-4 pr-10 py-2 text-sm font-medium focus:ring-2 focus:ring-teal-500 outline-none cursor-pointer hover:bg-slate-750 transition-colors">
+                                        <select name="type" value={form.type} onChange={handleTemplate}
+                                            className="appearance-none bg-white/5 text-white border border-white/10 rounded-lg pl-4 pr-10 py-2 text-sm font-medium focus:ring-2 focus:ring-teal-500/60 outline-none cursor-pointer hover:bg-white/10 transition-colors backdrop-blur-sm">
                                             <option value="" disabled>Select Template...</option>
                                             {Object.keys(TEMPLATES).map(t => <option key={t} value={t}>{t}</option>)}
                                         </select>
-                                        <div className="absolute right-3 top-2.5 pointer-events-none text-slate-400 group-hover:text-teal-400">
+                                        <div className="absolute right-3 top-2.5 pointer-events-none text-slate-300 group-hover:text-teal-300">
                                             <ChevronRight className="w-4 h-4 rotate-90" />
                                         </div>
                                     </div>
@@ -472,14 +537,37 @@ export default function App() {
 
                                 <div className="space-y-6">
                                     <div>
-                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Indication</label>
-                                        <input name="indication" value={form.indication} onChange={handleChange} className="w-full bg-slate-800 border border-slate-600 rounded-lg px-4 py-2.5 text-slate-100 focus:ring-2 focus:ring-teal-500 outline-none" placeholder="Clinical symptoms or history..." />
+                                        <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Clinical History</label>
+                                        <input name="indication" value={form.indication} onChange={handleChange} className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder:text-slate-400 focus:ring-2 focus:ring-teal-500/60 outline-none backdrop-blur-sm" placeholder="Chief complaint or reason for study" />
+                                    </div>
+
+                                    {/* Abnormal Quick Picks */}
+                                    <div>
+                                        <div className="flex justify-between items-center mb-2">
+                                            <label className="block text-xs font-bold text-slate-500 uppercase">Common abnormal findings</label>
+                                            <span className="text-[10px] text-slate-400">클릭하면 Findings에 추가됩니다</span>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            {abnormalOptions?.map((item) => (
+                                                <button
+                                                    key={item.label}
+                                                    type="button"
+                                                    onClick={() => addAbnormalSnippet(item.text)}
+                                                    className="px-3 py-1.5 bg-white/5 border border-white/10 text-slate-100 rounded-full text-xs hover:border-teal-400 hover:text-teal-200 transition-colors backdrop-blur-sm"
+                                                >
+                                                    {item.label}
+                                                </button>
+                                            ))}
+                                            {(!abnormalOptions || abnormalOptions.length === 0) && (
+                                                <span className="text-xs text-slate-500">Select an exam type to load presets.</span>
+                                            )}
+                                        </div>
                                     </div>
 
                                     {/* Findings Editor */}
                                     <div>
                                         <div className="flex justify-between items-end mb-2">
-                                            <label className="block text-xs font-bold text-slate-500 uppercase">Detailed Findings</label>
+                                            <label className="block text-xs font-bold text-slate-400 uppercase">Detailed Findings</label>
                                             <div className="flex items-center gap-3">
                                                 {form.findings && <span className="text-[10px] text-teal-500 font-mono">{form.findings.length} chars</span>}
                                                 <button onClick={handleAiPolish} disabled={aiLoading} className="text-xs flex items-center gap-1 bg-indigo-500/20 text-indigo-300 hover:text-indigo-200 hover:bg-indigo-500/30 px-2 py-1 rounded transition-colors disabled:opacity-50">
@@ -487,18 +575,18 @@ export default function App() {
                                                 </button>
                                             </div>
                                         </div>
-                                        <textarea name="findings" value={form.findings} onChange={handleChange} rows="12" className="w-full bg-slate-800 border border-slate-600 rounded-lg p-4 text-slate-100 font-mono text-sm leading-relaxed focus:ring-2 focus:ring-teal-500 outline-none resize-none" placeholder="Select a template or start typing..." />
+                                        <textarea name="findings" value={form.findings} onChange={handleChange} rows="12" className="w-full bg-white/5 border border-white/10 rounded-lg p-4 text-white font-mono text-sm leading-relaxed focus:ring-2 focus:ring-teal-500/60 outline-none resize-none backdrop-blur-sm placeholder:text-slate-400" placeholder="Select a template or start typing..." />
                                     </div>
 
                                     {/* Impression Editor */}
                                     <div>
                                         <div className="flex justify-between items-end mb-2">
-                                            <label className="block text-xs font-bold text-slate-500 uppercase">Conclusion / Impression</label>
+                                            <label className="block text-xs font-bold text-slate-400 uppercase">Conclusion / Impression</label>
                                             <button onClick={handleAiImpression} disabled={aiLoading} className="text-xs flex items-center gap-1 bg-indigo-500/20 text-indigo-300 hover:text-indigo-200 hover:bg-indigo-500/30 px-2 py-1 rounded transition-colors disabled:opacity-50">
                                                 {aiLoading === 'impression' ? <Loader2 className="w-3 h-3 animate-spin"/> : <Sparkles className="w-3 h-3"/>} Suggest
                                             </button>
                                         </div>
-                                        <textarea name="impression" value={form.impression} onChange={handleChange} rows="3" className="w-full bg-slate-800 border border-slate-600 rounded-lg p-4 text-teal-300 font-medium text-sm focus:ring-2 focus:ring-teal-500 outline-none resize-none" placeholder="Summary of findings..." />
+                                        <textarea name="impression" value={form.impression} onChange={handleChange} rows="3" className="w-full bg-white/5 border border-white/10 rounded-lg p-4 text-teal-200 font-medium text-sm focus:ring-2 focus:ring-teal-500/60 outline-none resize-none backdrop-blur-sm placeholder:text-slate-400" placeholder="Summary of findings..." />
                                     </div>
                                 </div>
                             </div>
@@ -507,10 +595,10 @@ export default function App() {
                     </div>
 
                     {/* Live Preview (Desktop Only) */}
-                    <div className="hidden xl:block w-[400px] bg-[#0f172a] border-l border-slate-700 p-8 overflow-y-auto relative">
-                        <div className="sticky top-0 mb-6 flex items-center justify-between bg-[#0f172a] z-10 pb-4 border-b border-slate-800">
-                            <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Live Preview</span>
-                            <Layout className="w-4 h-4 text-slate-600" />
+                    <div className="hidden xl:block w-[400px] bg-white/5 border-l border-white/10 p-8 overflow-y-auto relative backdrop-blur-2xl">
+                        <div className="sticky top-0 mb-6 flex items-center justify-between bg-[#0c1223]/80 z-10 pb-4 border-b border-white/10 backdrop-blur-2xl">
+                            <span className="text-xs font-bold text-slate-300 uppercase tracking-widest">Live Preview</span>
+                            <Layout className="w-4 h-4 text-slate-400" />
                         </div>
                         
                         {/* A4 Paper Simulation */}
@@ -524,6 +612,7 @@ export default function App() {
                                 <div><span className="font-bold">ID:</span> {form.id}</div>
                                 <div><span className="font-bold">Date:</span> {form.date}</div>
                                 <div><span className="font-bold">Type:</span> {form.type}</div>
+                                <div><span className="font-bold">Age/Sex:</span> {ageSex.age} / {ageSex.sex}</div>
                             </div>
                             <div className="mb-4">
                                 <div className="font-bold uppercase border-b border-black mb-1">Findings</div>
@@ -559,11 +648,6 @@ export default function App() {
                     
                     <div className="print-label">Exam Type</div>
                     <div style={{gridColumn: 'span 3'}}>{form.type}</div>
-                </div>
-
-                <div className="print-section">
-                    <div className="print-sec-title">Clinical Indication</div>
-                    <div className="print-content">{form.indication}</div>
                 </div>
 
                 <div className="print-section">
